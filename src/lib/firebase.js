@@ -6,7 +6,7 @@ const firebaseConfig = {
   apiKey: "AIzaSyBFN8fIosDVB4EBesb6HODy_Y9VRhShTfA",
   authDomain: "rendimiento-gym.firebaseapp.com",
   projectId: "rendimiento-gym",
-  storageBucket: "rendimiento-gym.appspot.com",
+storageBucket: "rendimiento-gym.firebasestorage.app",
   messagingSenderId: "1075510522670",
   appId: "1:1075510522670:web:38ec4376ba867cb2f7c0bf"
 };
