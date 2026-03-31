@@ -1,0 +1,42 @@
+// firestore.rules
+// Copiá esto en Firebase Console → Firestore → Reglas
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Configuración: todos leen, nadie escribe sin ser instructor (simplificado)
+    match /config/{doc} {
+      allow read: if true;
+      allow write: if true;
+    }
+    // Alumnos: todos leen (para la vista alumno), todos escriben (instructores desde el panel)
+    match /alumnos/{alumnoId} {
+      allow read, write: if true;
+      match /bloques/{bloqueId} {
+        allow read, write: if true;
+      }
+    }
+    // Ejercicios: todos leen
+    match /ejercicios/{doc} {
+      allow read: if true;
+      allow write: if true;
+    }
+    // Plantillas
+    match /plantillas/{doc} {
+      allow read, write: if true;
+    }
+    // Instructores: todos leen (para login por PIN), solo admins escriben (simplificado)
+    match /instructores/{doc} {
+      allow read: if true;
+      allow write: if true;
+    }
+    // Actividad / logs
+    match /activity/{doc} {
+      allow read, write: if true;
+    }
+    // Sesiones
+    match /sesiones/{doc} {
+      allow read, write: if true;
+    }
+  }
+}
