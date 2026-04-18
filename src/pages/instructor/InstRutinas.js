@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { doc, updateDoc } from "firebase/firestore";
 import { db } from "../../lib/firebase";
@@ -8,6 +8,7 @@ import {
 } from "../../lib/db";
 import { useAuth } from "../../contexts/AuthContext";
 import Toast from "../../components/Toast";
+import EjercicioSelector from "../../components/EjercicioSelector";
 
 const ETAPAS = ["Movilidad / Core", "Fuerza / Aeróbico", "Vuelta a la calma"];
 const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -23,26 +24,137 @@ function sortByEtapa(exercises) {
   return [...exercises].sort((a, b) => ETAPAS.indexOf(a.etapa) - ETAPAS.indexOf(b.etapa));
 }
 
+// ── Drag & drop dentro de una etapa ────────────────────────────────────────
+function DraggableExList({ exs, etapa, etapaStyle, onEdit, onDelete, onReorder }) {
+  const dragIdx   = useRef(null);
+  const [dragOver, setDragOver] = useState(null);
+
+  const handleDragStart = (e, idx) => {
+    dragIdx.current = idx;
+    e.dataTransfer.effectAllowed = "move";
+    // Pequeño delay para que el ghost se vea bien
+    setTimeout(() => e.target.style.opacity = "0.4", 0);
+  };
+
+  const handleDragEnd = (e) => {
+    e.target.style.opacity = "1";
+    setDragOver(null);
+    dragIdx.current = null;
+  };
+
+  const handleDragOver = (e, idx) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setDragOver(idx);
+  };
+
+  const handleDrop = (e, dropIdx) => {
+    e.preventDefault();
+    const fromIdx = dragIdx.current;
+    if (fromIdx === null || fromIdx === dropIdx) return;
+    const reordered = [...exs];
+    const [moved] = reordered.splice(fromIdx, 1);
+    reordered.splice(dropIdx, 0, moved);
+    onReorder(reordered);
+    setDragOver(null);
+  };
+
+  // Touch drag (mobile/tablet)
+  const touchStartY  = useRef(null);
+  const touchFromIdx = useRef(null);
+
+  const handleTouchStart = (e, idx) => {
+    touchStartY.current  = e.touches[0].clientY;
+    touchFromIdx.current = idx;
+  };
+
+  const handleTouchEnd = (e, idx) => {
+    const dy = e.changedTouches[0].clientY - touchStartY.current;
+    if (Math.abs(dy) < 10) return; // tap, no drag
+    const dir     = dy > 0 ? 1 : -1;
+    const fromIdx = touchFromIdx.current;
+    const toIdx   = fromIdx + dir;
+    if (toIdx < 0 || toIdx >= exs.length) return;
+    const reordered = [...exs];
+    const [moved] = reordered.splice(fromIdx, 1);
+    reordered.splice(toIdx, 0, moved);
+    onReorder(reordered);
+  };
+
+  return (
+    <div>
+      {exs.map((ex, idx) => (
+        <div
+          key={idx}
+          draggable
+          onDragStart={e => handleDragStart(e, idx)}
+          onDragEnd={handleDragEnd}
+          onDragOver={e => handleDragOver(e, idx)}
+          onDrop={e => handleDrop(e, idx)}
+          onTouchStart={e => handleTouchStart(e, idx)}
+          onTouchEnd={e => handleTouchEnd(e, idx)}
+          style={{
+            background: dragOver === idx ? etapaStyle.bg : "var(--bg2)",
+            border: `1px solid ${dragOver === idx ? etapaStyle.color : "var(--border)"}`,
+            borderRadius: "var(--r-lg)",
+            padding: "10px 12px",
+            marginBottom: 8,
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            cursor: "grab",
+            transition: "background 0.15s, border-color 0.15s",
+            userSelect: "none",
+            touchAction: "none",
+          }}
+        >
+          {/* Handle */}
+          <div style={{ color:"var(--text3)", fontSize:18, cursor:"grab", flexShrink:0, lineHeight:1 }}>⠿</div>
+
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontWeight:700, fontSize:14, marginBottom:4 }}>{ex.name}</div>
+            <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+              {ex.sets   && <span className="badge badge-red"   style={{ fontSize:10 }}>{ex.sets} series</span>}
+              {ex.reps   && <span className="badge badge-blue"  style={{ fontSize:10 }}>{ex.reps} reps</span>}
+              {ex.weight && <span className="badge badge-green" style={{ fontSize:10 }}>{ex.weight}</span>}
+              {ex.notes  && <span className="badge badge-gray"  style={{ fontSize:10 }}>📝 Indicación</span>}
+            </div>
+          </div>
+
+          <div style={{ display:"flex", gap:4, flexShrink:0 }}>
+            <button className="btn btn-ghost btn-icon btn-sm"
+              onClick={e => { e.stopPropagation(); onEdit(idx); }}
+              style={{ cursor:"pointer" }}>✏️</button>
+            <button className="btn btn-danger btn-icon btn-sm"
+              onClick={e => { e.stopPropagation(); onDelete(idx); }}
+              style={{ cursor:"pointer" }}>✕</button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function InstRutinas() {
-  const [params]                      = useSearchParams();
-  const [alumnos, setAlumnos]         = useState([]);
-  const [ejercicios, setEjercicios]   = useState([]);
-  const [plantillas, setPlantillas]   = useState([]);
-  const [selAlumno, setSelAlumno]     = useState(params.get("alumno") || "");
-  const [bloques, setBloques]         = useState([]);
-  const [selBloqueId, setSelBloqueId] = useState(null);
-  const [view, setView]               = useState("bloques");
-  const [bloqueForm, setBloqueForm]   = useState(EMPTY_BLOQUE);
-  const [exForm, setExForm]           = useState(EMPTY_EX);
-  const [showExForm, setShowExForm]   = useState(false);
-  const [editExIdx, setEditExIdx]     = useState(null);
-  const [saving, setSaving]           = useState(false);
-  const [toast, setToast]             = useState("");
+  const [params]                        = useSearchParams();
+  const [alumnos, setAlumnos]           = useState([]);
+  const [ejercicios, setEjercicios]     = useState([]);
+  const [plantillas, setPlantillas]     = useState([]);
+  const [selAlumno, setSelAlumno]       = useState(params.get("alumno") || "");
+  const [bloques, setBloques]           = useState([]);
+  const [selBloqueId, setSelBloqueId]   = useState(null);
+  const [view, setView]                 = useState("bloques");
+  const [bloqueForm, setBloqueForm]     = useState(EMPTY_BLOQUE);
+  const [exForm, setExForm]             = useState(EMPTY_EX);
+  const [showExForm, setShowExForm]     = useState(false);
+  const [editExIdx, setEditExIdx]       = useState(null);
+  const [saving, setSaving]             = useState(false);
+  const [toast, setToast]               = useState("");
   const [searchAlumno, setSearchAlumno] = useState("");
   const [showAlumnoList, setShowAlumnoList] = useState(false);
-  const [searchBloque, setSearchBloque]     = useState("");
-  const [searchEj, setSearchEj]             = useState("");
-  const { instructor } = useAuth();
+  const [searchBloque, setSearchBloque] = useState("");
+  const [searchEj, setSearchEj]         = useState("");
+  const { instructor }                  = useAuth();
 
   useEffect(() => watchAlumnos(setAlumnos), []);
   useEffect(() => watchEjercicios(setEjercicios), []);
@@ -76,11 +188,28 @@ export default function InstRutinas() {
     setSearchBloque("");
   };
 
+  // Guardar ejercicios — respeta el orden dentro de cada etapa, luego reordena por etapa
   const guardarEjercicios = async (exercises) => {
-    const sorted = sortByEtapa(exercises);
-    await updateDoc(doc(db, "alumnos", selAlumno, "bloques", selBloqueId), { exercises: sorted });
+    await updateDoc(doc(db, "alumnos", selAlumno, "bloques", selBloqueId), { exercises });
     await logActivity({ type:"change", message:`Rutina "${selBloque?.name}" actualizada — ${alumno?.name}`, instructorId: instructor.id, instructorName: instructor.name });
     setToast("Guardado ✓");
+  };
+
+  // Reordenar dentro de una etapa: reemplaza los ejercicios de esa etapa en su posición
+  const handleReorder = async (et, reorderedEtapa) => {
+    const rest    = (selBloque?.exercises || []).filter(e => e.etapa !== et);
+    // Mantener el orden global: Core → Fuerza → Calma, con el nuevo orden dentro de la etapa
+    const rebuilt = ETAPAS.flatMap(etapa =>
+      etapa === et ? reorderedEtapa : (selBloque?.exercises || []).filter(e => e.etapa === etapa)
+    ).filter(e => rest.includes(e) || reorderedEtapa.includes(e) || (selBloque?.exercises||[]).includes(e));
+
+    // Más simple: juntar en orden global
+    const final = [
+      ...(et === "Movilidad / Core"  ? reorderedEtapa : (selBloque?.exercises||[]).filter(e=>e.etapa==="Movilidad / Core")),
+      ...(et === "Fuerza / Aeróbico" ? reorderedEtapa : (selBloque?.exercises||[]).filter(e=>e.etapa==="Fuerza / Aeróbico")),
+      ...(et === "Vuelta a la calma" ? reorderedEtapa : (selBloque?.exercises||[]).filter(e=>e.etapa==="Vuelta a la calma")),
+    ];
+    await guardarEjercicios(final);
   };
 
   const crearBloque = async () => {
@@ -107,7 +236,13 @@ export default function InstRutinas() {
     }
     if (editExIdx !== null) exercises[editExIdx] = exForm;
     else exercises.push(exForm);
-    await guardarEjercicios(exercises);
+    // Al agregar, respetar orden de etapas pero mantener orden interno
+    const final = [
+      ...exercises.filter(e=>e.etapa==="Movilidad / Core"),
+      ...exercises.filter(e=>e.etapa==="Fuerza / Aeróbico"),
+      ...exercises.filter(e=>e.etapa==="Vuelta a la calma"),
+    ];
+    await guardarEjercicios(final);
     setExForm(EMPTY_EX);
     setShowExForm(false);
     setEditExIdx(null);
@@ -115,10 +250,11 @@ export default function InstRutinas() {
   };
 
   const editarEjercicio = (idx) => {
-    setExForm(selBloque.exercises[idx]);
+    const ex = selBloque.exercises[idx];
+    setExForm(ex);
     setEditExIdx(idx);
     setShowExForm(true);
-    setSearchEj(selBloque.exercises[idx].name);
+    setSearchEj(ex.name);
   };
 
   const eliminarEjercicio = async (idx) => {
@@ -134,9 +270,8 @@ export default function InstRutinas() {
 
   const asignarPlantilla = async (p) => {
     const copiaEjercicios = (p.exercises || []).map(ex => ({ ...ex }));
-    const id = await saveBloque(selAlumno, {
-      name: p.name, label: p.label || "", exercises: sortByEtapa(copiaEjercicios), order: bloques.length
-    });
+    const sorted = sortByEtapa(copiaEjercicios);
+    const id = await saveBloque(selAlumno, { name:p.name, label:p.label||"", exercises:sorted, order:bloques.length });
     await logActivity({ type:"change", message:`Plantilla "${p.name}" asignada a ${alumno?.name}`, instructorId: instructor.id, instructorName: instructor.name });
     setSelBloqueId(id);
     setView("editBloque");
@@ -153,38 +288,25 @@ export default function InstRutinas() {
     <div className="page">
       <h2 style={{ fontSize:36, marginBottom:20 }}>RUTINAS</h2>
 
-      {/* Selector alumno — input + dropdown manual */}
       <div className="field mb8" style={{ position:"relative" }}>
         <label className="label">Alumno</label>
         <input
           value={searchAlumno}
-          onChange={e => { setSearchAlumno(e.target.value); setShowAlumnoList(true); if(!e.target.value){ setSelAlumno(""); } }}
+          onChange={e => { setSearchAlumno(e.target.value); setShowAlumnoList(true); if(!e.target.value) setSelAlumno(""); }}
           onFocus={() => setShowAlumnoList(true)}
           placeholder="🔍 Buscar o seleccionar alumno..."
         />
         {showAlumnoList && filteredAlumnos.length > 0 && (
-          <div style={{
-            position:"absolute", top:"100%", left:0, right:0, zIndex:100,
-            background:"var(--bg2)", border:"1px solid var(--border-md)",
-            borderRadius:"var(--r-sm)", boxShadow:"0 8px 24px rgba(0,0,0,0.4)",
-            maxHeight:220, overflowY:"auto", marginTop:4
-          }}>
+          <div style={{ position:"absolute", top:"100%", left:0, right:0, zIndex:100, background:"var(--bg2)", border:"1px solid var(--border-md)", borderRadius:"var(--r-sm)", boxShadow:"0 8px 24px rgba(0,0,0,0.4)", maxHeight:220, overflowY:"auto", marginTop:4 }}>
             {filteredAlumnos.map(a => (
               <div key={a.id} onClick={() => selectAlumno(a)}
-                style={{ padding:"11px 14px", cursor:"pointer", fontSize:14,
-                  background: selAlumno===a.id ? "var(--red-bg)" : "transparent",
-                  color: selAlumno===a.id ? "var(--red)" : "var(--text)",
-                  fontWeight: selAlumno===a.id ? 600 : 400,
-                  borderBottom:"1px solid var(--border)"
-                }}
-              >
+                style={{ padding:"11px 14px", cursor:"pointer", fontSize:14, background:selAlumno===a.id?"var(--red-bg)":"transparent", color:selAlumno===a.id?"var(--red)":"var(--text)", fontWeight:selAlumno===a.id?600:400, borderBottom:"1px solid var(--border)" }}>
                 {a.name} {selAlumno===a.id && "✓"}
               </div>
             ))}
           </div>
         )}
       </div>
-      {/* Cerrar dropdown al clickear afuera */}
       {showAlumnoList && <div style={{ position:"fixed", inset:0, zIndex:50 }} onClick={() => setShowAlumnoList(false)} />}
 
       {!selAlumno
@@ -251,11 +373,7 @@ export default function InstRutinas() {
                     <div>
                       <div style={{ fontWeight:600, fontSize:13 }}>⭐ {p.name}</div>
                       <div className="flex gap8 mt4" style={{ flexWrap:"wrap" }}>
-                        {ETAPAS.map(et => {
-                          const n = (p.exercises||[]).filter(e=>e.etapa===et).length;
-                          if (!n) return null;
-                          return <span key={et} className="badge" style={{ fontSize:10, background:ETAPA_STYLE[et].bg, color:ETAPA_STYLE[et].color }}>{n} {et}</span>;
-                        })}
+                        {ETAPAS.map(et => { const n=(p.exercises||[]).filter(e=>e.etapa===et).length; if(!n) return null; return <span key={et} className="badge" style={{ fontSize:10, background:ETAPA_STYLE[et].bg, color:ETAPA_STYLE[et].color }}>{n} {et}</span>; })}
                       </div>
                     </div>
                     <button className="btn btn-primary btn-sm" onClick={() => asignarPlantilla(p)}>Asignar</button>
@@ -291,8 +409,8 @@ export default function InstRutinas() {
     </div>
   );
 
-  // ── VISTA: Editar rutina ─────────────────────────────────────────────────
-  const exercises = sortByEtapa(selBloque?.exercises || []);
+  // ── VISTA: Editar rutina con drag & drop ────────────────────────────────
+  const exercises = selBloque?.exercises || [];
   const grupos    = exPorEtapa(exercises);
 
   return (
@@ -306,6 +424,13 @@ export default function InstRutinas() {
           <p className="text-sm text-muted">{alumno?.name} · {exercises.length} ejercicios</p>
         </div>
       </div>
+
+      {exercises.length > 0 && (
+        <div style={{ background:"var(--bg3)", borderRadius:"var(--r-sm)", padding:"8px 12px", marginBottom:16, fontSize:12, color:"var(--text2)" }}>
+          ⠿ Mantené apretado y arrastrá para reordenar dentro de cada categoría
+        </div>
+      )}
+
       <div className="divider" />
 
       {exercises.length === 0
@@ -316,71 +441,46 @@ export default function InstRutinas() {
             const style = ETAPA_STYLE[et];
             return (
               <div key={et} className="mb16">
-                <div style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0 5px" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0 10px" }}>
                   <span style={{ padding:"3px 12px", borderRadius:999, fontSize:11, fontWeight:700, background:style.bg, color:style.color, whiteSpace:"nowrap" }}>{et.toUpperCase()}</span>
                   <div style={{ flex:1, height:1, background:style.bg }} />
+                  <span style={{ fontSize:11, color:style.color }}>{exs.length} ejercicios</span>
                 </div>
-                {exs.map((ex) => {
-                  const globalIdx = selBloque.exercises.indexOf(ex);
-                  return (
-                    <div key={globalIdx} className="card card-sm flex-between mb8">
-                      <div style={{ flex:1, minWidth:0 }}>
-                        <div style={{ fontWeight:700, fontSize:14, marginBottom:4 }}>{ex.name}</div>
-                        <div className="flex gap8" style={{ flexWrap:"wrap" }}>
-                          {ex.sets   && <span className="badge badge-red"   style={{ fontSize:10 }}>{ex.sets} series</span>}
-                          {ex.reps   && <span className="badge badge-blue"  style={{ fontSize:10 }}>{ex.reps} reps</span>}
-                          {ex.weight && <span className="badge badge-green" style={{ fontSize:10 }}>{ex.weight}</span>}
-                          {ex.notes  && <span className="badge badge-gray"  style={{ fontSize:10 }}>📝 Indicación</span>}
-                        </div>
-                      </div>
-                      <div className="flex gap4">
-                        <button className="btn btn-ghost btn-icon btn-sm" onClick={() => editarEjercicio(globalIdx)}>✏️</button>
-                        <button className="btn btn-danger btn-icon btn-sm" onClick={() => eliminarEjercicio(globalIdx)}>✕</button>
-                      </div>
-                    </div>
-                  );
-                })}
+                <DraggableExList
+                  exs={exs}
+                  etapa={et}
+                  etapaStyle={style}
+                  onEdit={(localIdx) => {
+                    // Convertir índice local (dentro de la etapa) a índice global
+                    const globalIdx = exercises.indexOf(exs[localIdx]);
+                    editarEjercicio(globalIdx);
+                  }}
+                  onDelete={(localIdx) => {
+                    const globalIdx = exercises.indexOf(exs[localIdx]);
+                    eliminarEjercicio(globalIdx);
+                  }}
+                  onReorder={(reordered) => handleReorder(et, reordered)}
+                />
               </div>
             );
           })
       }
 
+      {/* Form agregar/editar */}
       {showExForm ? (
         <div className="card card-red mt16">
           <div className="flex-between mb16">
             <h3 style={{ fontSize:18 }}>{editExIdx !== null ? "Editar ejercicio" : "Agregar ejercicio"}</h3>
             <button className="btn btn-ghost btn-sm" onClick={() => { setShowExForm(false); setExForm(EMPTY_EX); setEditExIdx(null); setSearchEj(""); }}>Cancelar</button>
           </div>
-          <div className="field">
-            <label className="label">Buscar en biblioteca</label>
-            <input value={searchEj} onChange={e => setSearchEj(e.target.value)} placeholder="🔍 Nombre del ejercicio..." autoFocus />
-          </div>
-          {ejercicios.length === 0
-            ? <p className="text-sm text-muted mb12">No hay ejercicios. Agregá en la sección "Ejercicios" primero.</p>
-            : filteredEjercicios.length === 0
-              ? <p className="text-sm text-muted mb12">Sin resultados para "{searchEj}".</p>
-              : (
-                <div style={{ maxHeight:200, overflowY:"auto", marginBottom:14, border:"1px solid var(--border-md)", borderRadius:"var(--r-sm)" }}>
-                  {ETAPAS.map(et => {
-                    const exsEt = filteredEjercicios.filter(e => e.etapa === et);
-                    if (!exsEt.length) return null;
-                    return (
-                      <div key={et}>
-                        <div style={{ padding:"6px 12px", background:"var(--bg3)", fontSize:10, fontWeight:700, color:ETAPA_STYLE[et].color }}>{et.toUpperCase()}</div>
-                        {exsEt.map(ej => (
-                          <div key={ej.id}
-                            onClick={() => { setExForm(f=>({...f, ejId:ej.id, name:ej.name, etapa:ej.etapa||"Fuerza / Aeróbico"})); setSearchEj(ej.name); }}
-                            style={{ padding:"10px 14px", cursor:"pointer", fontSize:14, borderBottom:"1px solid var(--border)", background:exForm.ejId===ej.id?"var(--red-bg)":"transparent", color:exForm.ejId===ej.id?"var(--red)":"var(--text)", fontWeight:exForm.ejId===ej.id?600:400 }}
-                          >
-                            {ej.name} {exForm.ejId===ej.id && "✓"}
-                          </div>
-                        ))}
-                      </div>
-                    );
-                  })}
-                </div>
-              )
-          }
+          <EjercicioSelector
+            ejercicios={ejercicios}
+            selectedEjId={exForm.ejId}
+            onSelect={(ej) => {
+              setExForm(f => ({ ...f, ejId:ej.id, name:ej.name, etapa:ej.etapa||"Fuerza / Aeróbico" }));
+            }}
+          />
+          <div style={{ marginBottom:14 }} />
           <div className="field">
             <label className="label">Etapa</label>
             <div className="flex gap8" style={{ flexWrap:"wrap" }}>

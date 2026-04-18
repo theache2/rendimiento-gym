@@ -3,16 +3,14 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import "./index.css";
 
-// Páginas alumno
 import SelectRole      from "./pages/SelectRole";
+import AlumnoLogin     from "./pages/AlumnoLogin";
 import AlumnoSelect    from "./pages/AlumnoSelect";
 import AlumnoRutina    from "./pages/AlumnoRutina";
+import InstructorLogin from "./pages/InstructorLogin";
+import InstructorShell from "./pages/InstructorShell";
 
-// Páginas instructor
-import InstructorLogin    from "./pages/InstructorLogin";
-import InstructorShell    from "./pages/InstructorShell";
-
-function PrivateRoute({ children }) {
+function PrivateInstructor({ children }) {
   const { instructor } = useAuth();
   return instructor ? children : <Navigate to="/instructor/login" replace />;
 }
@@ -22,16 +20,13 @@ export default function App() {
     <AuthProvider>
       <BrowserRouter>
         <Routes>
-          {/* Alumno */}
           <Route path="/"                  element={<SelectRole />} />
+          <Route path="/login-alumno"      element={<AlumnoLogin />} />
           <Route path="/alumnos"           element={<AlumnoSelect />} />
           <Route path="/alumnos/:alumnoId" element={<AlumnoRutina />} />
-
-          {/* Instructor */}
           <Route path="/instructor/login"  element={<InstructorLogin />} />
-          <Route path="/instructor/*"      element={<PrivateRoute><InstructorShell /></PrivateRoute>} />
-
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="/instructor/*"      element={<PrivateInstructor><InstructorShell /></PrivateInstructor>} />
+          <Route path="*"                  element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
     </AuthProvider>

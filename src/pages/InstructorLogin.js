@@ -5,7 +5,7 @@ import { watchConfig } from "../lib/db";
 
 export default function InstructorLogin() {
   const navigate = useNavigate();
-  const { login, instructor } = useAuth();
+  const { loginInstructor: login, instructor } = useAuth();
   const [pin, setPin]     = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);

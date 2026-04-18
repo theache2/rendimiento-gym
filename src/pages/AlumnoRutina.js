@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { doc, getDoc, onSnapshot } from "firebase/firestore";
+import { doc, getDoc } from "firebase/firestore";
 import { db } from "../lib/firebase";
 import { watchBloques, registrarSesion, watchConfig } from "../lib/db";
 import { useOnline } from "../hooks/useOnline";
+import { useAuth } from "../contexts/AuthContext";
 
 const COLORS = [
   ["var(--red-bg)","var(--red)"],["var(--blue-bg)","var(--blue)"],
@@ -14,41 +15,54 @@ const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 function initials(name) {
   return name.split(" ").map(w=>w[0]).join("").toUpperCase().slice(0,2);
 }
-
 function getYoutubeEmbed(url) {
   const m = url?.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|shorts\/|embed\/))([a-zA-Z0-9_-]{11})/);
   return m ? `https://www.youtube.com/embed/${m[1]}` : null;
 }
 
+function proxyImg(url) {
+  if (!url) return '';
+  if (url.includes('firebasestorage') || url.includes('youtube') || !url.includes('cloudfront')) return url;
+return '/api/img?url=' + encodeURIComponent(url);}
+
 const ETAPA_STYLE = {
-  "Movilidad / Core":  { label:"MOVILIDAD / CORE",  color:"var(--blue)",  bg:"var(--blue-bg)" },
-  "Fuerza / Aeróbico": { label:"FUERZA / AERÓBICO", color:"var(--red)",   bg:"var(--red-bg)" },
+  "Movilidad / Core":  { label:"MOVILIDAD / CORE",  color:"var(--blue)",  bg:"var(--blue-bg)"  },
+  "Fuerza / Aeróbico": { label:"FUERZA / AERÓBICO", color:"var(--red)",   bg:"var(--red-bg)"   },
   "Vuelta a la calma": { label:"VUELTA A LA CALMA",  color:"var(--green)", bg:"var(--green-bg)" },
 };
 
 export default function AlumnoRutina() {
-  const { alumnoId } = useParams();
-  const navigate     = useNavigate();
-  const online       = useOnline();
+  const { alumnoId }   = useParams();
+  const navigate       = useNavigate();
+  const online         = useOnline();
+  const { alumnoAuth, logoutAlumno } = useAuth();
 
-  const [alumno, setAlumno]         = useState(null);
-  const [config, setConfig]         = useState({ gymName:"RENDIMIENTO", logoUrl:null });
-  const [bloques, setBloques]       = useState([]);
+  const [alumno, setAlumno]           = useState(null);
+  const [config, setConfig]           = useState({ gymName:"RENDIMIENTO", logoUrl:null });
+  const [bloques, setBloques]         = useState([]);
   const [selBloqueId, setSelBloqueId] = useState(null);
   const [selBloqueIdx, setSelBloqueIdx] = useState(null);
-  const [ejercicios, setEjercicios] = useState({});  // mapa ejId → ejercicio global
-  const [openTabs, setOpenTabs]     = useState(() => {
+  const [ejercicios, setEjercicios]   = useState({});
+  const [openTabs, setOpenTabs]       = useState(() => {
     try { return JSON.parse(sessionStorage.getItem("openTabs")||"[]"); } catch { return []; }
   });
-  const [openEx, setOpenEx]         = useState(null);
-  const [loading, setLoading]       = useState(true);
+  const [openEx, setOpenEx]           = useState(null);
+  const [loading, setLoading]         = useState(true);
   const [sessionStarted, setSessionStarted] = useState(false);
+
+  // Verificar acceso: alumno solo puede ver su propia rutina
+  useEffect(() => {
+    if (!alumnoAuth) { navigate("/login-alumno", { replace:true }); return; }
+    if (!alumnoAuth.isTablet && alumnoAuth.id !== alumnoId) {
+      navigate(`/alumnos/${alumnoAuth.id}`, { replace:true });
+    }
+  }, [alumnoAuth, alumnoId]);
 
   useEffect(() => watchConfig(setConfig), []);
 
   useEffect(() => {
     getDoc(doc(db, "alumnos", alumnoId)).then(snap => {
-      if (snap.exists()) setAlumno({ id: snap.id, ...snap.data() });
+      if (snap.exists()) setAlumno({ id:snap.id, ...snap.data() });
       else navigate("/alumnos");
     });
   }, [alumnoId]);
@@ -57,10 +71,8 @@ export default function AlumnoRutina() {
     return watchBloques(alumnoId, data => {
       setBloques(data);
       setLoading(false);
-      // Determinar cuál bloque va hoy (el siguiente al último hecho)
       if (data.length > 0 && !selBloqueId) {
-        const alumnoSnap = doc(db, "alumnos", alumnoId);
-        getDoc(alumnoSnap).then(snap => {
+        getDoc(doc(db, "alumnos", alumnoId)).then(snap => {
           const lastRutinaId = snap.data()?.lastSession?.rutinaId;
           const lastIdx = data.findIndex(b => b.id === lastRutinaId);
           const nextIdx = lastIdx === -1 ? 0 : (lastIdx + 1) % data.length;
@@ -71,7 +83,6 @@ export default function AlumnoRutina() {
     });
   }, [alumnoId]);
 
-  // Cargar ejercicios globales referenciados
   useEffect(() => {
     const bloque = bloques.find(b => b.id === selBloqueId);
     if (!bloque?.exercises?.length) return;
@@ -87,7 +98,7 @@ export default function AlumnoRutina() {
 
   const startSession = async () => {
     if (!bloque || sessionStarted) return;
-    await registrarSesion({ alumnoId, alumnoName: alumno?.name || alumnoId, rutinaId: bloque.id, rutinaNombre: bloque.name });
+    await registrarSesion({ alumnoId, alumnoName:alumno?.name||alumnoId, rutinaId:bloque.id, rutinaNombre:bloque.name });
     setSessionStarted(true);
   };
 
@@ -109,7 +120,12 @@ export default function AlumnoRutina() {
     }
   };
 
-  // Agrupar ejercicios del bloque por etapa
+  const handleLogout = () => {
+    // Si es tablet vuelve a la grilla, si es alumno propio vuelve al login
+    if (alumnoAuth?.isTablet) navigate("/alumnos");
+    else { logoutAlumno(); navigate("/"); }
+  };
+
   const exByEtapa = bloque?.exercises?.reduce((acc, ex) => {
     const et = ex.etapa || "Fuerza / Aeróbico";
     if (!acc[et]) acc[et] = [];
@@ -118,35 +134,41 @@ export default function AlumnoRutina() {
   }, {}) || {};
 
   const alumnoIdx = openTabs.findIndex(t => t.id === alumnoId);
-  const [avatarBg, avatarFg] = COLORS[alumnoIdx % COLORS.length] || COLORS[0];
-
+  const [avatarBg, avatarFg] = COLORS[Math.max(alumnoIdx,0) % COLORS.length];
   const gymName = config.gymName || "RENDIMIENTO";
   const lastBloqueId = alumno?.lastSession?.rutinaId;
-  const lastBloqueName = alumno?.lastSession?.rutinaNombre;
+  const isTablet = alumnoAuth?.isTablet;
 
   return (
     <div style={{ display:"flex", flexDirection:"column", minHeight:"100vh", background:"var(--bg)" }}>
-      {/* Topbar */}
       <div className="topbar">
         <div className="flex gap12">
-          <button onClick={() => navigate("/alumnos")} style={{ background:"none", border:"none", color:"var(--text2)", fontSize:20, cursor:"pointer", lineHeight:1 }}>←</button>
+          {isTablet
+            ? <button onClick={() => navigate("/alumnos")} style={{ background:"none", border:"none", color:"var(--text2)", fontSize:20, cursor:"pointer", lineHeight:1 }}>←</button>
+            : null
+          }
           {config.logoUrl
             ? <img src={config.logoUrl} alt="" style={{ height:26, objectFit:"contain" }} />
             : <span style={{ fontFamily:"'Bebas Neue'", fontSize:18, color:"var(--red)", letterSpacing:2 }}>{gymName}</span>
           }
         </div>
-        <div className="flex gap8">
-          <span className={`online-dot ${online?"on":"off"}`} />
-          <span className="text-xs text-muted">{online?"Online":"Offline"}</span>
+        <div className="flex gap12">
+          <div className="flex gap8">
+            <span className={`online-dot ${online?"on":"off"}`} />
+            <span className="text-xs text-muted">{online?"Online":"Offline"}</span>
+          </div>
+          {!isTablet && (
+            <button onClick={handleLogout} className="btn btn-ghost btn-sm" style={{ fontSize:12 }}>Salir</button>
+          )}
         </div>
       </div>
 
       <div style={{ flex:1, padding:"20px 20px 16px", overflowY:"auto" }}>
-        {/* Header alumno */}
         <div className="flex gap12 mb20">
-          <div className="alumno-avatar" style={{ background:avatarBg, color:avatarFg, width:48, height:48, fontSize:18 }}>
-            {alumno ? initials(alumno.name) : "?"}
-          </div>
+          {alumno?.photoUrl
+            ? <img src={alumno.photoUrl} alt="" style={{ width:48, height:48, borderRadius:"50%", objectFit:"cover", flexShrink:0 }} />
+            : <div className="alumno-avatar" style={{ background:avatarBg, color:avatarFg, width:48, height:48, fontSize:18, flexShrink:0 }}>{alumno ? initials(alumno.name) : "?"}</div>
+          }
           <div>
             <h1 style={{ fontSize:36, lineHeight:1 }}>{alumno?.name?.split(" ")[0]?.toUpperCase() || "..."}</h1>
             <p className="text-muted text-sm">Tu ciclo de rutinas</p>
@@ -156,51 +178,39 @@ export default function AlumnoRutina() {
         {loading
           ? <div className="spinner-center"><div className="spinner" /></div>
           : bloques.length === 0
-            ? <div className="empty"><div className="empty-icon">📋</div>Tu instructor aún no cargó rutinas. Consultale.</div>
+            ? <div className="empty"><div className="empty-icon">📋</div>Tu instructor aún no cargó rutinas.</div>
             : <>
-                {/* Selección de bloque */}
                 <div className="mb16">
-                  {lastBloqueName && (
+                  {alumno?.lastSession?.rutinaNombre && (
                     <div style={{ fontSize:12, color:"var(--text3)", marginBottom:10 }}>
-                      Última vez: <span style={{ color:"var(--text2)" }}>{lastBloqueName}</span>
+                      Última vez: <span style={{ color:"var(--text2)" }}>{alumno.lastSession.rutinaNombre}</span>
                     </div>
                   )}
                   {bloques.map((b, i) => {
-                    const isSel     = b.id === selBloqueId;
-                    const isLast    = b.id === lastBloqueId;
-                    const isNext    = !sessionStarted && i === selBloqueIdx;
+                    const isSel  = b.id === selBloqueId;
+                    const isLast = b.id === lastBloqueId;
+                    const isNext = !sessionStarted && i === selBloqueIdx;
                     return (
-                      <div
-                        key={b.id}
-                        className={`bloque-row${isSel?" active":""}`}
-                        style={{ background: isSel ? "var(--bg3)" : "var(--bg2)", border: isSel ? "1px solid var(--red-bd)" : "1px solid var(--border)", borderRadius:12, marginBottom:8 }}
+                      <div key={b.id}
+                        style={{ background:isSel?"var(--bg3)":"var(--bg2)", border:`1px solid ${isSel?"var(--red-bd)":"var(--border)"}`, borderRadius:12, marginBottom:8, padding:"12px 14px", display:"flex", alignItems:"center", gap:12, cursor:"pointer" }}
                         onClick={() => selectBloque(b, i)}
                       >
-                        <div style={{ width:36, height:36, borderRadius:9, background: isSel ? "var(--red)" : "var(--red-bg)", color: isSel ? "white" : "var(--red)", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:16, flexShrink:0 }}>
+                        <div style={{ width:36, height:36, borderRadius:9, background:isSel?"var(--red)":"var(--red-bg)", color:isSel?"white":"var(--red)", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:16, flexShrink:0 }}>
                           {LETTERS[i]}
                         </div>
                         <div style={{ flex:1 }}>
                           <div style={{ fontWeight:700, fontSize:14 }}>{b.name}</div>
                           <div style={{ fontSize:12, color:"var(--text2)", marginTop:2 }}>{b.exercises?.length||0} ejercicios</div>
                         </div>
-                        {isNext && !isLast && (
-                          <span style={{ fontSize:11, background:"var(--gold-bg)", color:"var(--gold)", border:"1px solid rgba(255,190,50,0.25)", borderRadius:999, padding:"3px 10px", fontWeight:700 }}>
-                            ▶ Hoy
-                          </span>
-                        )}
-                        {isLast && (
-                          <span style={{ fontSize:11, color:"var(--text3)", background:"var(--bg4)", borderRadius:999, padding:"3px 8px" }}>
-                            ✓ última
-                          </span>
-                        )}
+                        {isNext && !isLast && <span style={{ fontSize:11, background:"var(--gold-bg)", color:"var(--gold)", border:"1px solid rgba(255,190,50,0.25)", borderRadius:999, padding:"3px 10px", fontWeight:700 }}>▶ Hoy</span>}
+                        {isLast && <span style={{ fontSize:11, color:"var(--text3)", background:"var(--bg4)", borderRadius:999, padding:"3px 8px" }}>✓ última</span>}
                       </div>
                     );
                   })}
                 </div>
 
-                {/* Botón empezar sesión */}
                 {bloque && !sessionStarted && (
-                  <button className="btn btn-primary btn-full mb16" style={{ padding:"14px", fontSize:15 }} onClick={startSession}>
+                  <button className="btn btn-primary btn-full mb16" style={{ padding:14, fontSize:15 }} onClick={startSession}>
                     Empezar {bloque.name} →
                   </button>
                 )}
@@ -210,7 +220,6 @@ export default function AlumnoRutina() {
                   </div>
                 )}
 
-                {/* Ejercicios del bloque seleccionado */}
                 {bloque && (
                   <div className="card" style={{ padding:0, overflow:"hidden" }}>
                     {["Movilidad / Core","Fuerza / Aeróbico","Vuelta a la calma"].map(et => {
@@ -226,62 +235,58 @@ export default function AlumnoRutina() {
                           {exs.map((ex, i) => {
                             const global = ejercicios[ex.ejId] || {};
                             const isOpen = openEx === `${et}-${i}`;
+                            const hasDetail = global.videoUrl || ex.notes || global.description;
                             return (
-                              <div key={i} className="ex-item">
-                                <div className={`ex-header${isOpen?" open":""}`} onClick={() => setOpenEx(isOpen ? null : `${et}-${i}`)}>
-                                  <div className="ex-num" style={{ background: isOpen ? style.color : style.bg, color: isOpen ? "white" : style.color }}>{i+1}</div>
+                              <div key={i} style={{ borderBottom:"1px solid var(--border)" }}>
+                                <div style={{ display:"flex", alignItems:"center", gap:12, padding:"13px 16px", cursor:hasDetail?"pointer":"default", background:isOpen?"var(--bg3)":"transparent" }}
+                                  onClick={() => hasDetail && setOpenEx(isOpen ? null : `${et}-${i}`)}>
+                                  <div style={{ width:28, height:28, borderRadius:7, background:isOpen?style.color:style.bg, color:isOpen?"white":style.color, display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, fontWeight:800, flexShrink:0 }}>{i+1}</div>
                                   <div style={{ flex:1 }}>
-                                    <div className="ex-name" style={{ color: isOpen ? "var(--text)" : "var(--text)" }}>{ex.name}</div>
-                                    <div className="flex gap8 mt4" style={{ flexWrap:"wrap" }}>
+                                    <div style={{ fontWeight:600, fontSize:14 }}>{ex.name}</div>
+                                    <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginTop:4 }}>
                                       {ex.sets   && <span className="badge badge-red"   style={{ fontSize:10 }}>{ex.sets} series</span>}
                                       {ex.reps   && <span className="badge badge-blue"  style={{ fontSize:10 }}>{ex.reps} reps</span>}
                                       {ex.weight && <span className="badge badge-green" style={{ fontSize:10 }}>{ex.weight}</span>}
                                     </div>
                                   </div>
-                                  {(global.videoUrl || ex.notes || global.description) && (
-                                    <span className={`ex-chevron${isOpen?" open":""}`}>▼</span>
-                                  )}
+                                  {hasDetail && <span style={{ color:isOpen?style.color:"var(--text3)", fontSize:12, transition:"transform 0.2s", display:"inline-block", transform:isOpen?"rotate(180deg)":"none" }}>▼</span>}
                                 </div>
-
                                 {isOpen && (
-                                  <div className="ex-detail">
-                                    <div className="ex-detail-inner">
-                                      {/* Stats */}
-                                      <div className="ex-stat-row">
-                                        <div className="ex-stat"><div className="ex-stat-val">{ex.sets||"—"}</div><div className="ex-stat-lbl">series</div></div>
-                                        <div className="ex-stat"><div className="ex-stat-val">{ex.reps||"—"}</div><div className="ex-stat-lbl">reps</div></div>
-                                        <div className="ex-stat"><div className="ex-stat-val" style={{ fontSize: ex.weight&&ex.weight.length>4 ? 14:20 }}>{ex.weight||"—"}</div><div className="ex-stat-lbl">peso</div></div>
+                                  <div style={{ padding:"0 16px 14px", borderTop:"1px solid var(--border)", background:"var(--bg3)" }}>
+                                    <div style={{ paddingTop:12 }}>
+                                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:14 }}>
+                                        {["sets","reps","weight"].map(k => (
+                                          <div key={k} style={{ background:"var(--bg2)", borderRadius:"var(--r-sm)", padding:"10px 8px", textAlign:"center" }}>
+                                            <div style={{ fontSize:20, fontWeight:800, color:"var(--red)", lineHeight:1 }}>{ex[k]||"—"}</div>
+                                            <div style={{ fontSize:10, color:"var(--text3)", marginTop:3 }}>{k==="sets"?"series":k==="reps"?"reps":"peso"}</div>
+                                          </div>
+                                        ))}
                                       </div>
-
-                                      {/* Descripción general */}
                                       {global.description && (
                                         <div className="mb12">
                                           <div className="label">Descripción</div>
                                           <p className="text-sm" style={{ color:"var(--text2)", lineHeight:1.6 }}>{global.description}</p>
                                         </div>
                                       )}
-
-                                      {/* Video */}
                                       {global.videoUrl && (
                                         <div className="mb12">
-                                          <div className="label">Video</div>
-                                          {global.videoType==="youtube" && getYoutubeEmbed(global.videoUrl)
-                                            ? <div className="video-wrap">
-                                                <iframe src={getYoutubeEmbed(global.videoUrl)} allowFullScreen title={ex.name} />
-                                              </div>
+                                          <div className="label">{global.videoType==="image" ? "Animación" : "Video"}</div>
+                                          {global.videoType==="image" || (!global.videoType && global.videoUrl.includes("cloudfront"))
+                                            ? <img src={proxyImg(global.videoUrl)} alt={ex.name} style={{ width:"100%", borderRadius:"var(--r-sm)", display:"block" }} />
                                             : <div className="video-wrap">
-                                                <video src={global.videoUrl} controls playsInline />
+                                                {global.videoType==="youtube" && getYoutubeEmbed(global.videoUrl)
+                                                  ? <iframe src={getYoutubeEmbed(global.videoUrl)} allowFullScreen title={ex.name} />
+                                                  : <video src={global.videoUrl} controls playsInline />
+                                                }
                                               </div>
                                           }
                                         </div>
                                       )}
-
-                                      {/* Indicación personal */}
                                       {ex.notes && (
                                         <div>
                                           <div className="label">Indicación personal</div>
-                                          <div className="personal-note">
-                                            <p>{ex.notes}</p>
+                                          <div style={{ background:"var(--red-bg)", border:"1px solid var(--red-bd)", borderRadius:"var(--r-sm)", padding:"10px 12px" }}>
+                                            <p style={{ fontSize:13, color:"#d8888a", lineHeight:1.5 }}>{ex.notes}</p>
                                           </div>
                                         </div>
                                       )}
@@ -300,15 +305,10 @@ export default function AlumnoRutina() {
         }
       </div>
 
-      {/* Tab strip */}
-      {openTabs.length > 0 && (
+      {isTablet && openTabs.length > 0 && (
         <div className="tab-strip">
           {openTabs.map(t => (
-            <div
-              key={t.id}
-              className={`tab-pill${t.id===alumnoId?" active":""}`}
-              onClick={() => navigate(`/alumnos/${t.id}`)}
-            >
+            <div key={t.id} className={`tab-pill${t.id===alumnoId?" active":""}`} onClick={() => navigate(`/alumnos/${t.id}`)}>
               <span>{t.name.split(" ")[0]}</span>
               <span className="x" onClick={e => closeTab(e, t.id)}>✕</span>
             </div>
