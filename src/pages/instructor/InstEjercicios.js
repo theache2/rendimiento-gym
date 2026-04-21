@@ -18,26 +18,20 @@ function getYoutubeEmbed(url) {
   return m ? `https://www.youtube.com/embed/${m[1]}` : null;
 }
 
-
-function proxyImg(url) {
-  if (!url) return '';
-  if (url.includes('firebasestorage') || url.includes('youtube') || !url.includes('cloudfront')) return url;
-return '/api/img?url=' + encodeURIComponent(url);}
-function isImage(url) {
-  return url && (url.includes("cloudfront.net") || url.match(/\.(png|gif|jpg|jpeg|webp)$/i));
+function isFirebaseUrl(url) {
+  return url && url.includes('firebasestorage');
 }
 
 export default function InstEjercicios() {
-  const [ejercicios, setEjercicios]     = useState([]);
-  const [search, setSearch]             = useState("");
-  const [filtroEtapa, setFiltroEtapa]   = useState(null);
-  const [editing, setEditing]           = useState(null);
-  const [form, setForm]                 = useState(EMPTY);
-  const [uploadPct, setUploadPct]       = useState(null);
-  const [toast, setToast]               = useState("");
-  const [previewEx, setPreviewEx]       = useState(null); // ejercicio en preview
-  const fileRef = useRef();
-  const { instructor } = useAuth();
+  const [ejercicios, setEjercicios]   = useState([]);
+  const [search, setSearch]           = useState("");
+  const [filtroEtapa, setFiltroEtapa] = useState(null);
+  const [editing, setEditing]         = useState(null);
+  const [form, setForm]               = useState(EMPTY);
+  const [uploadPct, setUploadPct]     = useState(null);
+  const [toast, setToast]             = useState("");
+  const fileRef                       = useRef();
+  const { instructor }                = useAuth();
 
   useEffect(() => watchEjercicios(setEjercicios), []);
 
@@ -52,22 +46,28 @@ export default function InstEjercicios() {
     return acc;
   }, {}), [filtered]);
 
-  const openNew  = () => { setForm(EMPTY); setEditing("new"); setPreviewEx(null); };
+  const openNew  = () => { setForm(EMPTY); setEditing("new"); };
   const openEdit = (e) => {
     setForm({
       name:        e.name        || "",
       etapa:       e.etapa       || "Fuerza / Aeróbico",
       description: e.description || "",
-      videoType:   e.videoType   || (isImage(e.videoUrl) ? "image" : "youtube"),
-      videoUrl:    e.videoUrl    || "",
+      videoType:   isFirebaseUrl(e.videoUrl) ? "file" : (e.videoType === "youtube" ? "youtube" : "none"),
+      videoUrl:    isFirebaseUrl(e.videoUrl) ? e.videoUrl : (e.videoType === "youtube" ? e.videoUrl || "" : ""),
     });
     setEditing(e.id);
-    setPreviewEx(null);
   };
 
   const save = async () => {
     if (!form.name.trim()) return;
-    await saveEjercicio(form, editing === "new" ? null : editing);
+    // Limpiar videoUrl si es none o una URL de cloudfront (stenfit)
+    const cleanForm = {
+      ...form,
+      videoUrl: form.videoType === "none" || (form.videoUrl && form.videoUrl.includes("cloudfront"))
+        ? ""
+        : form.videoUrl,
+    };
+    await saveEjercicio(cleanForm, editing === "new" ? null : editing);
     await logActivity({ type:"change", message:`Ejercicio "${form.name}" ${editing==="new"?"creado":"actualizado"}`, instructorId:instructor.id, instructorName:instructor.name });
     setEditing(null);
     setToast("Ejercicio guardado ✓");
@@ -77,7 +77,6 @@ export default function InstEjercicios() {
     if (!window.confirm(`¿Eliminar "${e.name}"?`)) return;
     await deleteEjercicio(e.id);
     setToast("Ejercicio eliminado");
-    if (previewEx?.id === e.id) setPreviewEx(null);
   };
 
   const uploadVideo = (file) => new Promise((res, rej) => {
@@ -92,26 +91,18 @@ export default function InstEjercicios() {
     if (!file) return;
     try {
       const url = await uploadVideo(file);
-      setForm(f => ({ ...f, videoUrl: url, videoType: file.type.startsWith("image") ? "image" : "file" }));
-      setToast("Archivo subido ✓");
+      setForm(f => ({ ...f, videoUrl: url, videoType: "file" }));
+      setToast("Video subido ✓");
     } catch { setToast("Error al subir"); setUploadPct(null); }
   };
 
-  // Renderizar preview de imagen/video/youtube
-  const renderMedia = (ex, height = 180) => {
-    const url = ex.videoUrl || form?.videoUrl;
-    const type = ex.videoType || form?.videoType;
-    if (!url) return null;
-    if (type === "image" || isImage(url)) {
-      return <img src={proxyImg(url)} alt={ex.name} referrerPolicy="no-referrer" crossOrigin="anonymous" style={{ width:"100%", height, objectFit:"cover", borderRadius:"var(--r-sm)", border:"1px solid var(--border)", display:"block" }} />;
-    }
-    if (type === "youtube" && getYoutubeEmbed(url)) {
-      return <div className="video-wrap" style={{ marginTop:8 }}><iframe src={getYoutubeEmbed(url)} allowFullScreen title={ex.name} /></div>;
-    }
-    if (type === "file") {
-      return <div className="video-wrap" style={{ marginTop:8 }}><video src={url} controls playsInline /></div>;
-    }
-    return null;
+  // Determinar si un ejercicio tiene video válido
+  const hasValidVideo = (e) => {
+    if (!e.videoUrl) return false;
+    if (e.videoUrl.includes("cloudfront")) return false; // URL de Stenfit — no mostrar
+    if (isFirebaseUrl(e.videoUrl)) return true;
+    if (e.videoType === "youtube" && getYoutubeEmbed(e.videoUrl)) return true;
+    return false;
   };
 
   return (
@@ -124,16 +115,14 @@ export default function InstEjercicios() {
         <button className="btn btn-primary" onClick={openNew}>+ Nuevo</button>
       </div>
 
-      {/* Buscador */}
       <div className="field mb12">
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 Buscar ejercicio..." />
       </div>
 
-      {/* Filtros por etapa */}
       <div className="flex gap8 mb24" style={{ flexWrap:"wrap" }}>
         {ETAPAS.map(et => (
           <span key={et} onClick={() => setFiltroEtapa(filtroEtapa===et ? null : et)}
-            style={{ padding:"6px 14px", borderRadius:999, fontSize:12, fontWeight:600, cursor:"pointer", transition:"all 0.15s",
+            style={{ padding:"6px 14px", borderRadius:999, fontSize:12, fontWeight:600, cursor:"pointer",
               background: filtroEtapa===et ? ETAPA_STYLE[et].bg : "var(--bg3)",
               color: filtroEtapa===et ? ETAPA_STYLE[et].color : "var(--text2)",
               border: `1px solid ${filtroEtapa===et ? ETAPA_STYLE[et].color : "var(--border-md)"}` }}>
@@ -147,7 +136,6 @@ export default function InstEjercicios() {
         )}
       </div>
 
-      {/* Form nuevo/editar */}
       {editing && (
         <div className="card card-red mb24">
           <div className="flex-between mb16">
@@ -170,45 +158,37 @@ export default function InstEjercicios() {
           </div>
 
           <div className="field">
-            <label className="label">Descripción / técnica (visible para todos los alumnos)</label>
+            <label className="label">Descripción / técnica</label>
             <textarea value={form.description} onChange={e=>setForm(f=>({...f,description:e.target.value}))} placeholder="Instrucciones de técnica, músculos trabajados, consejos..." rows={4} />
           </div>
 
           <div className="field">
-            <label className="label">Animación / video demostrativo</label>
+            <label className="label">Video demostrativo</label>
             <div className="flex gap8 mb8" style={{ flexWrap:"wrap" }}>
-              {["youtube","file","image","none"].map(t => (
-                <span key={t} className={`tag${form.videoType===t?" active":""}`}
-                  onClick={()=>setForm(f=>({...f,videoType:t,videoUrl:t==="none"?"":f.videoUrl}))}>
-                  {t==="youtube"?"YouTube":t==="file"?"Video propio":t==="image"?"Imagen/GIF":"Sin animación"}
-                </span>
-              ))}
+              <span className={`tag${form.videoType==="youtube"?" active":""}`} onClick={()=>setForm(f=>({...f,videoType:"youtube",videoUrl:""}))}>YouTube</span>
+              <span className={`tag${form.videoType==="file"?" active":""}`} onClick={()=>setForm(f=>({...f,videoType:"file",videoUrl:""}))}>Video propio</span>
+              <span className={`tag${form.videoType==="none"?" active":""}`} onClick={()=>setForm(f=>({...f,videoType:"none",videoUrl:""}))}>Sin video</span>
             </div>
 
             {form.videoType==="youtube" && (
-              <input value={form.videoUrl} onChange={e=>setForm(f=>({...f,videoUrl:e.target.value}))} placeholder="https://youtube.com/watch?v=..." />
+              <>
+                <input value={form.videoUrl} onChange={e=>setForm(f=>({...f,videoUrl:e.target.value}))} placeholder="https://youtube.com/watch?v=..." />
+                {form.videoUrl && getYoutubeEmbed(form.videoUrl) && (
+                  <div className="video-wrap mt8">
+                    <iframe src={getYoutubeEmbed(form.videoUrl)} allowFullScreen title="preview" />
+                  </div>
+                )}
+              </>
             )}
 
-            {(form.videoType==="file" || form.videoType==="image") && (
+            {form.videoType==="file" && (
               <div>
-                <input type="file" accept={form.videoType==="image"?"image/*":"video/*"} ref={fileRef} style={{ display:"none" }} onChange={handleFile} />
+                <input type="file" accept="video/*" ref={fileRef} style={{ display:"none" }} onChange={handleFile} />
                 <button className="btn btn-ghost btn-full" onClick={() => fileRef.current.click()} disabled={uploadPct!==null}>
-                  {uploadPct!==null ? `Subiendo... ${uploadPct}%` : `📁 Seleccionar ${form.videoType==="image"?"imagen/GIF":"video"}`}
+                  {uploadPct!==null ? `Subiendo... ${uploadPct}%` : "📁 Seleccionar video"}
                 </button>
                 {uploadPct!==null && <div className="progress mt8"><div className="progress-fill" style={{ width:`${uploadPct}%` }} /></div>}
-                {form.videoUrl && <p className="text-xs mt8" style={{ color:"var(--green)" }}>✓ Archivo subido</p>}
-              </div>
-            )}
-
-            {form.videoType==="none" && (
-              <p className="text-xs text-muted mt4">No se mostrará animación para este ejercicio.</p>
-            )}
-
-            {/* Preview en el form */}
-            {form.videoUrl && form.videoType !== "none" && (
-              <div style={{ marginTop:12 }}>
-                <div className="label mb8">Vista previa</div>
-                {renderMedia({ videoUrl:form.videoUrl, videoType:form.videoType, name:form.name })}
+                {form.videoUrl && isFirebaseUrl(form.videoUrl) && <p className="text-xs mt8" style={{ color:"var(--green)" }}>✓ Video subido</p>}
               </div>
             )}
           </div>
@@ -226,27 +206,6 @@ export default function InstEjercicios() {
         </div>
       )}
 
-      {/* Preview lateral al hacer clic en un ejercicio */}
-      {previewEx && !editing && (
-        <div className="card card-red mb16" style={{ position:"sticky", top:70, zIndex:10 }}>
-          <div className="flex-between mb12">
-            <div>
-              <div style={{ fontWeight:700, fontSize:15 }}>{previewEx.name}</div>
-              <span className="badge" style={{ fontSize:10, background:ETAPA_STYLE[previewEx.etapa]?.bg, color:ETAPA_STYLE[previewEx.etapa]?.color }}>{previewEx.etapa}</span>
-            </div>
-            <div className="flex gap8">
-              <button className="btn btn-ghost btn-sm" onClick={() => openEdit(previewEx)}>✏️ Editar</button>
-              <button className="btn btn-ghost btn-sm" onClick={() => setPreviewEx(null)}>✕</button>
-            </div>
-          </div>
-          {renderMedia(previewEx, 200)}
-          {previewEx.description && (
-            <p className="text-sm text-muted mt12" style={{ lineHeight:1.6 }}>{previewEx.description}</p>
-          )}
-        </div>
-      )}
-
-      {/* Lista agrupada por etapa */}
       {filtered.length === 0
         ? <div className="empty"><div className="empty-icon">🏋️</div>{ejercicios.length===0 ? "Sin ejercicios en la biblioteca" : "Sin resultados"}</div>
         : ETAPAS.map(et => {
@@ -260,39 +219,24 @@ export default function InstEjercicios() {
                   <div style={{ flex:1, height:1, background:style.bg }} />
                   <span className="text-xs text-muted">{exs.length}</span>
                 </div>
-
-                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(160px, 1fr))", gap:10 }}>
-                  {exs.map(e => (
-                    <div key={e.id}
-                      onClick={() => setPreviewEx(previewEx?.id===e.id ? null : e)}
-                      style={{
-                        background: previewEx?.id===e.id ? style.bg : "var(--bg2)",
-                        border: `1px solid ${previewEx?.id===e.id ? style.color : "var(--border)"}`,
-                        borderRadius:"var(--r-lg)", overflow:"hidden", cursor:"pointer",
-                        transition:"all 0.15s",
-                      }}
-                    >
-                      {/* Thumbnail animación */}
-                      {e.videoUrl && (isImage(e.videoUrl) || e.videoType==="image") ? (
-                        <img src={proxyImg(e.videoUrl)} alt={e.name} referrerPolicy="no-referrer" crossOrigin="anonymous"
-                          style={{ width:"100%", height:100, objectFit:"cover", display:"block", background:"var(--bg3)" }} />
-                      ) : (
-                        <div style={{ width:"100%", height:100, background:"var(--bg3)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                          <span style={{ fontSize:28 }}>{e.videoUrl ? "▶" : "🏋️"}</span>
-                        </div>
-                      )}
-                      <div style={{ padding:"8px 10px" }}>
-                        <div style={{ fontSize:12, fontWeight:600, color:"var(--text)", lineHeight:1.3, marginBottom:6 }}>{e.name}</div>
-                        <div className="flex gap4">
-                          <button className="btn btn-ghost btn-sm" style={{ fontSize:11, padding:"3px 8px" }}
-                            onClick={e2 => { e2.stopPropagation(); openEdit(e); }}>✏️</button>
-                          <button className="btn btn-danger btn-sm" style={{ fontSize:11, padding:"3px 8px" }}
-                            onClick={e2 => { e2.stopPropagation(); remove(e); }}>✕</button>
-                        </div>
+                {exs.map(e => (
+                  <div key={e.id} className="card flex-between mb8">
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontWeight:700, fontSize:14, marginBottom:4 }}>{e.name}</div>
+                      <div className="flex gap8" style={{ flexWrap:"wrap" }}>
+                        {hasValidVideo(e) && isFirebaseUrl(e.videoUrl) && <span className="badge badge-green" style={{ fontSize:10 }}>🎬 Video propio</span>}
+                        {hasValidVideo(e) && e.videoType==="youtube" && <span className="badge badge-red" style={{ fontSize:10 }}>▶ YouTube</span>}
+                        {!hasValidVideo(e) && <span className="badge badge-gray" style={{ fontSize:10 }}>Sin video · podés agregar uno</span>}
+                        {e.description && <span className="badge badge-gray" style={{ fontSize:10 }}>📝 Desc.</span>}
+                        {(e.mainMuscles||[]).slice(0,2).map(m => <span key={m} className="badge badge-gray" style={{ fontSize:10 }}>{m}</span>)}
                       </div>
                     </div>
-                  ))}
-                </div>
+                    <div className="flex gap8">
+                      <button className="btn btn-ghost btn-sm btn-icon" onClick={() => openEdit(e)}>✏️</button>
+                      <button className="btn btn-danger btn-sm btn-icon" onClick={() => remove(e)}>✕</button>
+                    </div>
+                  </div>
+                ))}
               </div>
             );
           })
